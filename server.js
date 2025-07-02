@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -14,38 +13,60 @@ app.use(cors({
 
 app.use(express.json());
 
-// TUS CREDENCIALES DE AZURE (van a venir de variables de entorno)
-const AZURE_TTS_KEY = process.env.AZURE_TTS_KEY;
-const AZURE_TTS_REGION = process.env.AZURE_TTS_REGION || 'eastus';
+// 🔑 CREDENCIALES DE ELEVENLABS
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+
+// 🎭 SISTEMA DE VOCES MÚLTIPLES (1 male, 1 female)
+const voices = [
+    'Adam',   // 🎙️ Male - Deep, authoritative voice
+    'Rachel'  // 👩 Female - Clear, professional voice
+];
+let currentVoiceIndex = 0;
+
+// 🎪 Función para obtener la próxima voz en rotación
+function getNextVoice() {
+    const voice = voices[currentVoiceIndex];
+    currentVoiceIndex = (currentVoiceIndex + 1) % voices.length;
+    console.log(`🎭 Próxima voz seleccionada: ${voice}`);
+    return voice;
+}
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ status: 'Server funcionando', time: new Date().toISOString() });
+    res.json({ 
+        status: 'ElevenLabs TTS Server funcionando', 
+        time: new Date().toISOString(),
+        voices: voices.length 
+    });
 });
 
 // Endpoint principal para TTS
 app.post('/speech', async (req, res) => {
-    const { word } = req.body;
+    const { word, voice } = req.body;
     
     if (!word) {
         return res.status(400).json({ error: 'Se necesita una palabra' });
     }
     
-    console.log(`🎤 Generando audio para: "${word}"`);
+    // Usar voz específica del request o rotar automáticamente
+    const selectedVoice = voice || getNextVoice();
+    
+    console.log(`🎤 Generando audio para: "${word}" con voz: ${selectedVoice}`);
     
     try {
-        const audioBuffer = await generateSpeech(word);
+        const audioBuffer = await generateSpeechElevenLabs(word, selectedVoice);
         const base64Audio = audioBuffer.toString('base64');
         
         res.json({ 
             audio: base64Audio,
             word: word,
+            voice: selectedVoice,
             success: true 
         });
         
-        console.log(`✅ Audio generado exitosamente para: "${word}"`);
+        console.log(`✅ Audio generado exitosamente para: "${word}" con ${selectedVoice}`);
     } catch (error) {
-        console.error('❌ Error en TTS:', error.message);
+        console.error('❌ Error en ElevenLabs TTS:', error.message);
         res.status(500).json({ 
             error: 'Error generando audio',
             details: error.message 
@@ -53,28 +74,39 @@ app.post('/speech', async (req, res) => {
     }
 });
 
-// Función para generar speech con Azure
-function generateSpeech(text) {
+// 🚀 FUNCIÓN PARA GENERAR SPEECH CON ELEVENLABS
+function generateSpeechElevenLabs(text, voiceName) {
     return new Promise((resolve, reject) => {
-        const ssml = `
-            <speak version="1.0" xml:lang="en-US">
-                <voice name="en-US-AriaNeural">
-                    <prosody rate="0.9" pitch="medium">
-                        ${text}
-                    </prosody>
-                </voice>
-            </speak>
-        `;
+        // Mapeo de nombres a voice_ids de ElevenLabs
+        const voiceMap = {
+            'Adam': 'pNInz6obpgDQGcFmaJgB',      // Adam - Male
+            'Rachel': '21m00Tcm4TlvDq8ikWAM',    // Rachel - Female
+            'Josh': 'TxGEqnHWrfWFTfGW9XjX',      // Josh - Male (backup)
+            'Bella': 'EXAVITQu4vr4xnSDxMaL'      // Bella - Female (backup)
+        };
+        
+        const voiceId = voiceMap[voiceName] || voiceMap['Adam']; // Default to Adam
+        
+        const postData = JSON.stringify({
+            text: text,
+            model_id: "eleven_monolingual_v1",
+            voice_settings: {
+                stability: 0.5,
+                similarity_boost: 0.5,
+                style: 0.0,
+                use_speaker_boost: true
+            }
+        });
         
         const options = {
-            hostname: `${AZURE_TTS_REGION}.tts.speech.microsoft.com`,
-            path: '/cognitiveservices/v1',
+            hostname: 'api.elevenlabs.io',
+            path: `/v1/text-to-speech/${voiceId}`,
             method: 'POST',
             headers: {
-                'Ocp-Apim-Subscription-Key': AZURE_TTS_KEY,
-                'Content-Type': 'application/ssml+xml',
-                'X-Microsoft-OutputFormat': 'audio-16khz-128kbitrate-mono-mp3',
-                'User-Agent': 'NodeJS-TTS-Client'
+                'Accept': 'audio/mpeg',
+                'Content-Type': 'application/json',
+                'xi-api-key': ELEVENLABS_API_KEY,
+                'Content-Length': Buffer.byteLength(postData)
             }
         };
         
@@ -90,7 +122,7 @@ function generateSpeech(text) {
                     const audioBuffer = Buffer.concat(chunks);
                     resolve(audioBuffer);
                 } else {
-                    reject(new Error(`Error de Azure: ${response.statusCode}`));
+                    reject(new Error(`Error de ElevenLabs: ${response.statusCode} - ${response.statusMessage}`));
                 }
             });
         });
@@ -99,14 +131,15 @@ function generateSpeech(text) {
             reject(error);
         });
         
-        req.write(ssml);
+        req.write(postData);
         req.end();
     });
 }
 
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-    console.log(`🔊 Listo para generar audio`);
+    console.log(`🚀 ElevenLabs TTS Server corriendo en puerto ${PORT}`);
+    console.log(`🔊 Listo para generar audio con ${voices.length} voces`);
+    console.log(`🎭 Voces disponibles: ${voices.join(', ')}`);
 });
 
 module.exports = app;
